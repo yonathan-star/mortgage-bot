@@ -4,11 +4,5 @@
     "api/*.js": {
       "maxDuration": 30
     }
-  },
-  "crons": [
-    {
-      "path": "/api/gmail-watch",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  }
 }
