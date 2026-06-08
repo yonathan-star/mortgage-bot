@@ -56,19 +56,14 @@ function extractLoanId(body) {
 
 // Extract borrower name from any of the known Arive field names
 function extractBorrowerName(body) {
-  return (
-    body['Borrower Name']
-    ?? body['borrower_name']
-    ?? body['Borrower First Name'] && body['Borrower Last Name']
-      ? `${body['Borrower First Name']} ${body['Borrower Last Name']}`.trim()
-      : null
-    ?? body['borrower_first_name'] && body['borrower_last_name']
-      ? `${body['borrower_first_name']} ${body['borrower_last_name']}`.trim()
-      : null
-    ?? body['Primary Borrower Name']
-    ?? body['Borrower']
-    ?? ''
-  );
+  if (body['Borrower Name'])          return body['Borrower Name'];
+  if (body['borrower_name'])          return body['borrower_name'];
+  if (body['Primary Borrower Name'])  return body['Primary Borrower Name'];
+  if (body['Borrower'])               return body['Borrower'];
+  const first = body['Borrower First Name'] || body['borrower_first_name'] || '';
+  const last  = body['Borrower Last Name']  || body['borrower_last_name']  || '';
+  if (first || last) return `${first} ${last}`.trim();
+  return '';
 }
 
 function extractLoName(body) {
@@ -137,9 +132,12 @@ async function deleteLoanAndConditions(page, loanId) {
 }
 
 module.exports = async (req, res) => {
+  // Parse query string manually (req.query not always available outside Express)
+  const rawUrl   = req.url ?? '';
+  const qp       = Object.fromEntries(new URLSearchParams(rawUrl.split('?')[1] ?? ''));
   const incomingKey = req.headers['x-zapier-key']
     ?? req.headers['authorization']
-    ?? req.query?.key;
+    ?? qp.key;
   if (!incomingKey || incomingKey !== HEADER_KEY) {
     log('unknown', 'AUTH', 'rejected — bad header key');
     return res.status(401).json({ error: 'Unauthorized' });
