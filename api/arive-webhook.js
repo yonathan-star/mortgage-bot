@@ -11,7 +11,19 @@ const FUNDED_STATUSES = new Set([
 
 // Map Arive milestone field names → our Notion status values
 // Order matters: most advanced status first
+// Covers both raw Arive field names and Zapier's "X Tracker Date/Status" naming
 const MILESTONE_MAP = [
+  // Zapier "Tracker Date" field names (e.g. "SIGNED_DOCS_WITH_LENDER Tracker Date")
+  { field: 'SIGNED_DOCS_WITH_LENDER Tracker Date', status: 'DOCS_SIGNED' },
+  { field: 'DOCS_OUT Tracker Date',                status: 'DOCS_OUT' },
+  { field: 'CLEAR_TO_CLOSE Tracker Date',          status: 'CLEAR_TO_CLOSE' },
+  { field: 'RE_SUBMITTAL Tracker Date',            status: 'RE_SUBMITTAL' },
+  { field: 'SUSPENDED Tracker Date',               status: 'SUSPENDED' },
+  { field: 'APPROVED_W_CONDITIONS Tracker Date',   status: 'APPROVED_WITH_CONDITIONS' },
+  { field: 'SUBMITTED_TO_UW Tracker Date',         status: 'UNDERWRITING_SUBMITTED' },
+  { field: 'DISCLOSED Tracker Date',               status: 'DISCLOSURE_SENT' },
+  { field: 'LOAN_SETUP Tracker Date',              status: 'LOAN_SETUP' },
+  // Raw Arive milestone date field names
   { field: 'Re Submittal',           status: 'RE_SUBMITTAL' },
   { field: 'Clear To Close',         status: 'CLEAR_TO_CLOSE' },
   { field: 'Docs Out',               status: 'DOCS_OUT' },
@@ -157,26 +169,26 @@ module.exports = async (req, res) => {
   if (!loanId) {
     return res.status(400).json({ error: 'Missing loan ID (expected: Lender Loan Number)' });
   }
-  if (!status) {
-    return res.status(400).json({ error: 'Could not determine status from payload' });
-  }
+  // Default to LOAN_SETUP if no milestone date found — loan is at least active
+  const resolvedStatus = status || 'LOAN_SETUP';
+  log(loanId, resolvedStatus, status ? 'status-derived' : 'status-defaulted-to-LOAN_SETUP');
 
   try {
-    if (FUNDED_STATUSES.has(status)) {
+    if (FUNDED_STATUSES.has(resolvedStatus)) {
       const existing = await findExistingLoan(loanId, borrowerName);
       if (existing) await deleteLoanAndConditions(existing, loanId);
-      else log(loanId, status, 'loan not found — nothing to delete');
-      return res.status(200).json({ ok: true, action: 'deleted', loanId, status });
+      else log(loanId, resolvedStatus, 'loan not found — nothing to delete');
+      return res.status(200).json({ ok: true, action: 'deleted', loanId, status: resolvedStatus });
     }
 
     // All other statuses → upsert
     const existing = await findExistingLoan(loanId, borrowerName);
     if (existing) {
-      await updateLoanStatus(existing.id, loanId, status);
+      await updateLoanStatus(existing.id, loanId, resolvedStatus);
     } else {
-      await createLoan({ loanId, borrowerName, loName, status });
+      await createLoan({ loanId, borrowerName, loName, status: resolvedStatus });
     }
-    return res.status(200).json({ ok: true, action: 'upserted', loanId, status, borrowerName });
+    return res.status(200).json({ ok: true, action: 'upserted', loanId, status: resolvedStatus, borrowerName });
 
   } catch (err) {
     console.error(JSON.stringify({ ts: new Date().toISOString(), error: err.message, loanId, status }));
