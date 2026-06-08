@@ -5,59 +5,104 @@ const LOANS_DB      = process.env.NOTION_LOANS_DB_ID;
 const CONDITIONS_DB = process.env.NOTION_CONDITIONS_DB_ID;
 const HEADER_KEY    = process.env.ZAPIER_STATIC_HEADER_KEY;
 
-const PROCESSING_STATUSES = new Set([
-  'LOAN_SETUP', 'DISCLOSURE_SENT', 'UNDERWRITING_SUBMITTED',
-  'APPROVED_WITH_CONDITIONS', 'RE_SUBMITTAL', 'CLEAR_TO_CLOSE',
-  'DOCS_OUT', 'DOCS_SIGNED', 'SUSPENDED'
-]);
-
 const FUNDED_STATUSES = new Set([
   'LOAN_FUNDED', 'BROKER_CHECK_RECEIVED', 'COMMISSION_PAID'
 ]);
+
+// Map Arive milestone field names → our Notion status values
+// Order matters: most advanced status first
+const MILESTONE_MAP = [
+  { field: 'Re Submittal',           status: 'RE_SUBMITTAL' },
+  { field: 'Clear To Close',         status: 'CLEAR_TO_CLOSE' },
+  { field: 'Docs Out',               status: 'DOCS_OUT' },
+  { field: 'Docs Signed',            status: 'DOCS_SIGNED' },
+  { field: 'Suspended',              status: 'SUSPENDED' },
+  { field: 'Approved w/ Conditions', status: 'APPROVED_WITH_CONDITIONS' },
+  { field: 'Submitted To UW',        status: 'UNDERWRITING_SUBMITTED' },
+  { field: 'Disclosed',              status: 'DISCLOSURE_SENT' },
+  { field: 'Loan Setup',             status: 'LOAN_SETUP' },
+  { field: 'Pre-Approved',           status: 'LOAN_SETUP' },
+];
 
 function log(loanId, status, action) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), loanId, status, action }));
 }
 
-// Normalize loan ID — trim whitespace and collapse internal spaces
 function normalizeLoanId(raw) {
   return (raw ?? '').toString().trim().replace(/\s+/g, ' ');
 }
 
-// Find by exact Loan ID, then fall back to borrower name contains
+// Derive the most advanced status from Arive's milestone date fields
+function deriveStatus(body) {
+  for (const { field, status } of MILESTONE_MAP) {
+    const val = body[field];
+    if (val && val.toString().trim() !== '') return status;
+  }
+  return null;
+}
+
+// Extract loan ID from any of the known Arive field names
+function extractLoanId(body) {
+  const raw = body['Lender Loan Number']
+    ?? body['lender_loan_number']
+    ?? body['loan_id']
+    ?? body['loanId']
+    ?? body['Loan ID']
+    ?? body['Loan Number']
+    ?? body['loan_number']
+    ?? '';
+  return normalizeLoanId(raw);
+}
+
+// Extract borrower name from any of the known Arive field names
+function extractBorrowerName(body) {
+  return (
+    body['Borrower Name']
+    ?? body['borrower_name']
+    ?? body['Borrower First Name'] && body['Borrower Last Name']
+      ? `${body['Borrower First Name']} ${body['Borrower Last Name']}`.trim()
+      : null
+    ?? body['borrower_first_name'] && body['borrower_last_name']
+      ? `${body['borrower_first_name']} ${body['borrower_last_name']}`.trim()
+      : null
+    ?? body['Primary Borrower Name']
+    ?? body['Borrower']
+    ?? ''
+  );
+}
+
+function extractLoName(body) {
+  return (
+    body['Loan Officer Name']
+    ?? body['LO Name']
+    ?? body['lo_name']
+    ?? body['Loan Officer']
+    ?? ''
+  ).toString().trim();
+}
+
 async function findExistingLoan(loanId, borrowerName) {
-  // 1. Exact Loan ID match
   if (loanId) {
     const r = await queryDatabase(LOANS_DB, {
       property: 'Loan ID', rich_text: { equals: loanId }
     });
-    if (r.results.length) {
-      log(loanId, null, `found by loan-id (${r.results.length} result)`);
-      return r.results[0];
-    }
+    if (r.results.length) return r.results[0];
 
-    // 2. Loan ID contains (handles minor prefix/suffix differences)
     const r2 = await queryDatabase(LOANS_DB, {
       property: 'Loan ID', rich_text: { contains: loanId }
     });
-    if (r2.results.length) {
-      log(loanId, null, `found by loan-id contains`);
-      return r2.results[0];
-    }
+    if (r2.results.length) return r2.results[0];
   }
 
-  // 3. Borrower name fallback (first word match)
   if (borrowerName) {
     const firstName = borrowerName.trim().split(/\s+/)[0];
-    const r3 = await queryDatabase(LOANS_DB, {
-      property: 'Borrower Name', title: { contains: firstName }
-    });
-    if (r3.results.length) {
-      log(loanId, null, `found by borrower-name fallback ("${firstName}")`);
-      return r3.results[0];
+    if (firstName) {
+      const r3 = await queryDatabase(LOANS_DB, {
+        property: 'Borrower Name', title: { contains: firstName }
+      });
+      if (r3.results.length) return r3.results[0];
     }
   }
-
   return null;
 }
 
@@ -70,7 +115,7 @@ async function findConditionsByLoan(loanPageId) {
 
 async function createLoan({ loanId, borrowerName, loName, status }) {
   await createPage(LOANS_DB, {
-    'Borrower Name': { title:     [{ text: { content: borrowerName } }] },
+    'Borrower Name': { title:     [{ text: { content: borrowerName || 'Unknown' } }] },
     'Loan ID':       { rich_text: [{ text: { content: loanId } }] },
     'LO Name':       { rich_text: [{ text: { content: loName ?? '' } }] },
     'Status':        { select:    { name: status } },
@@ -91,26 +136,7 @@ async function deleteLoanAndConditions(page, loanId) {
   log(loanId, 'FUNDED', `deleted loan + ${conditions.length} condition(s)`);
 }
 
-async function handleProcessing({ loanId, borrowerName, loName, status }) {
-  const existing = await findExistingLoan(loanId, borrowerName);
-  if (existing) {
-    await updateLoanStatus(existing.id, loanId, status);
-  } else {
-    await createLoan({ loanId, borrowerName, loName, status });
-  }
-}
-
-async function handleFunded({ loanId, borrowerName }) {
-  const existing = await findExistingLoan(loanId, borrowerName);
-  if (existing) {
-    await deleteLoanAndConditions(existing, loanId);
-  } else {
-    log(loanId, 'FUNDED', 'loan not found — nothing to delete');
-  }
-}
-
 module.exports = async (req, res) => {
-  // Accept key via header OR query param (?key=...) for Zapier compatibility
   const incomingKey = req.headers['x-zapier-key']
     ?? req.headers['authorization']
     ?? req.query?.key;
@@ -120,33 +146,42 @@ module.exports = async (req, res) => {
   }
 
   const body         = req.body ?? {};
-  const loanId       = normalizeLoanId(body.loan_id ?? body.loanId ?? body['Loan ID']);
-  const borrowerName = (body.borrower_name ?? body.borrowerName ?? body['Borrower Name'] ?? '').trim();
-  const loName       = (body.lo_name ?? body.loName ?? body['LO Name'] ?? '').trim();
-  // Normalize status: "Approved With Conditions" → "APPROVED_WITH_CONDITIONS"
-  const status       = (body.status ?? body.Status ?? body.loan_status ?? body.loanStatus ?? '')
-    .toString().trim().toUpperCase().replace(/[\s\-]+/g, '_');
+  const loanId       = extractLoanId(body);
+  const borrowerName = extractBorrowerName(body).toString().trim();
+  const loName       = extractLoName(body);
 
-  if (!loanId || !status) {
-    log('unknown', status, 'rejected — missing loanId or status');
-    return res.status(400).json({ error: 'Missing loan_id or status' });
+  // Accept explicit status OR derive from Arive milestone dates
+  const explicitStatus = (body.status ?? body.Status ?? '').toString().trim().toUpperCase().replace(/[\s\-]+/g, '_');
+  const status = explicitStatus || deriveStatus(body);
+
+  // Log raw body for debugging
+  console.log(JSON.stringify({ ts: new Date().toISOString(), raw_body: body }));
+  log(loanId || 'unknown', status || 'none', `received — borrower: "${borrowerName}"`);
+
+  if (!loanId) {
+    return res.status(400).json({ error: 'Missing loan ID (expected: Lender Loan Number)' });
+  }
+  if (!status) {
+    return res.status(400).json({ error: 'Could not determine status from payload' });
   }
 
-  // Log full raw body so we can see exactly what Arive/Zapier sends
-  console.log(JSON.stringify({ ts: new Date().toISOString(), raw_body: body }));
-  log(loanId, status, `received — borrower: "${borrowerName}"`);
-
   try {
-    if (PROCESSING_STATUSES.has(status)) {
-      await handleProcessing({ loanId, borrowerName, loName, status });
-      return res.status(200).json({ ok: true, action: 'upserted', loanId, status });
-    }
     if (FUNDED_STATUSES.has(status)) {
-      await handleFunded({ loanId, borrowerName });
+      const existing = await findExistingLoan(loanId, borrowerName);
+      if (existing) await deleteLoanAndConditions(existing, loanId);
+      else log(loanId, status, 'loan not found — nothing to delete');
       return res.status(200).json({ ok: true, action: 'deleted', loanId, status });
     }
-    log(loanId, status, 'ignored — unrecognized status');
-    return res.status(200).json({ ok: true, action: 'ignored', loanId, status });
+
+    // All other statuses → upsert
+    const existing = await findExistingLoan(loanId, borrowerName);
+    if (existing) {
+      await updateLoanStatus(existing.id, loanId, status);
+    } else {
+      await createLoan({ loanId, borrowerName, loName, status });
+    }
+    return res.status(200).json({ ok: true, action: 'upserted', loanId, status, borrowerName });
+
   } catch (err) {
     console.error(JSON.stringify({ ts: new Date().toISOString(), error: err.message, loanId, status }));
     return res.status(500).json({ error: 'Internal server error' });
