@@ -6,7 +6,10 @@ const { classify }    = require('../lib/email-classifier');
 
 const DRY_RUN = process.env.DRY_RUN === 'true';
 
-const STATE_FILE = path.join(__dirname, '..', '.gmail-state.json');
+// Vercel serverless: only /tmp is writable; fall back to local path for dev
+const STATE_FILE = process.env.VERCEL
+  ? '/tmp/.gmail-state.json'
+  : path.join(__dirname, '..', '.gmail-state.json');
 
 function log(inbox, msgId, classification, action) {
   console.log(JSON.stringify({
