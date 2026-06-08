@@ -4,6 +4,8 @@ const path = require('path');
 const { getClients }  = require('../lib/gmail-client');
 const { classify }    = require('../lib/email-classifier');
 
+const DRY_RUN = process.env.DRY_RUN === 'true';
+
 const STATE_FILE = path.join(__dirname, '..', '.gmail-state.json');
 
 function log(inbox, msgId, classification, action) {
@@ -62,7 +64,12 @@ async function processMessage(gmail, inboxLabel, msg) {
   const classification = classify(subject, body);
   log(inboxLabel, msg.id, classification, 'classified');
 
-  // Dispatch to handlers (stubs — full logic in Steps 5-7)
+  // Dry run — log only, no handler dispatch
+  if (DRY_RUN) {
+    log(inboxLabel, msg.id, classification, 'dry-run-skipped');
+    return;
+  }
+
   if (classification === 'CONDITION_LIST') {
     const conditionParser = require('../lib/condition-parser');
     let pdfBuffer = null;

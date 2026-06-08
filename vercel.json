@@ -5,10 +5,6 @@
       "maxDuration": 30
     }
   },
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1" },
-    { "src": "/(.*)", "dest": "/public/$1" }
-  ],
   "crons": [
     {
       "path": "/api/gmail-watch",
