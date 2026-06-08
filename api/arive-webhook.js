@@ -9,6 +9,41 @@ const FUNDED_STATUSES = new Set([
   'LOAN_FUNDED', 'BROKER_CHECK_RECEIVED', 'COMMISSION_PAID'
 ]);
 
+// Map Arive "Current Loan Status" text values → our Notion status codes
+// Normalised (lowercase, no spaces/hyphens) for fuzzy matching
+const CURRENT_STATUS_MAP = {
+  'applicationintake':       'APPLICATION_INTAKE',
+  'application':             'APPLICATION_INTAKE',
+  'loansetup':               'LOAN_SETUP',
+  'setup':                   'LOAN_SETUP',
+  'preapproved':             'LOAN_SETUP',
+  'disclosed':               'DISCLOSURE_SENT',
+  'disclosuresent':          'DISCLOSURE_SENT',
+  'submittedtouw':           'UNDERWRITING_SUBMITTED',
+  'uwsubmitted':             'UNDERWRITING_SUBMITTED',
+  'approvedw/conditions':    'APPROVED_WITH_CONDITIONS',
+  'approvedwithconditions':  'APPROVED_WITH_CONDITIONS',
+  'conditionallyapproved':   'APPROVED_WITH_CONDITIONS',
+  'suspended':               'SUSPENDED',
+  'resubmittal':             'RE_SUBMITTAL',
+  'resubmitted':             'RE_SUBMITTAL',
+  'cleartoclose':            'CLEAR_TO_CLOSE',
+  'ctc':                     'CLEAR_TO_CLOSE',
+  'docsout':                 'DOCS_OUT',
+  'docssent':                'DOCS_OUT',
+  'docssigned':              'DOCS_SIGNED',
+  'funded':                  'LOAN_FUNDED',
+  'loanfunded':              'LOAN_FUNDED',
+  'brokercheckreceived':     'BROKER_CHECK_RECEIVED',
+  'commissionpaid':          'COMMISSION_PAID',
+};
+
+function mapCurrentLoanStatus(raw) {
+  if (!raw) return null;
+  const key = raw.toString().toLowerCase().replace(/[\s_\-\/]+/g, '');
+  return CURRENT_STATUS_MAP[key] ?? null;
+}
+
 // Map Arive milestone field names → our Notion status values
 // Order matters: most advanced status first
 // Covers both raw Arive field names and Zapier's "X Tracker Date/Status" naming
@@ -160,9 +195,12 @@ module.exports = async (req, res) => {
   const borrowerName = extractBorrowerName(body).toString().trim();
   const loName       = extractLoName(body);
 
-  // Accept explicit status OR derive from Arive milestone dates
+  // Priority: Current Loan Status text → explicit status field → milestone dates → default
+  const currentLoanStatus = mapCurrentLoanStatus(
+    body['Current Loan Status'] ?? body['current_loan_status'] ?? ''
+  );
   const explicitStatus = (body.status ?? body.Status ?? '').toString().trim().toUpperCase().replace(/[\s\-]+/g, '_');
-  const status = explicitStatus || deriveStatus(body);
+  const status = currentLoanStatus || explicitStatus || deriveStatus(body);
 
   // Log raw body for debugging
   console.log(JSON.stringify({ ts: new Date().toISOString(), raw_body: body }));
