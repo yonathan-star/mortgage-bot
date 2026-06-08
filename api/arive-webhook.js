@@ -123,13 +123,17 @@ module.exports = async (req, res) => {
   const loanId       = normalizeLoanId(body.loan_id ?? body.loanId ?? body['Loan ID']);
   const borrowerName = (body.borrower_name ?? body.borrowerName ?? body['Borrower Name'] ?? '').trim();
   const loName       = (body.lo_name ?? body.loName ?? body['LO Name'] ?? '').trim();
-  const status       = (body.status ?? body.Status ?? '').toString().toUpperCase().replace(/\s+/g, '_').trim();
+  // Normalize status: "Approved With Conditions" → "APPROVED_WITH_CONDITIONS"
+  const status       = (body.status ?? body.Status ?? body.loan_status ?? body.loanStatus ?? '')
+    .toString().trim().toUpperCase().replace(/[\s\-]+/g, '_');
 
   if (!loanId || !status) {
     log('unknown', status, 'rejected — missing loanId or status');
     return res.status(400).json({ error: 'Missing loan_id or status' });
   }
 
+  // Log full raw body so we can see exactly what Arive/Zapier sends
+  console.log(JSON.stringify({ ts: new Date().toISOString(), raw_body: body }));
   log(loanId, status, `received — borrower: "${borrowerName}"`);
 
   try {
