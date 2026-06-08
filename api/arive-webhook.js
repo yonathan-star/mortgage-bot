@@ -75,7 +75,10 @@ async function handleFunded({ loanId }) {
 }
 
 module.exports = async (req, res) => {
-  const incomingKey = req.headers['x-zapier-key'] ?? req.headers['authorization'];
+  // Accept key via header OR query param (?key=...) for Zapier compatibility
+  const incomingKey = req.headers['x-zapier-key']
+    ?? req.headers['authorization']
+    ?? req.query?.key;
   if (!incomingKey || incomingKey !== HEADER_KEY) {
     log('unknown', 'AUTH', 'rejected — bad header key');
     return res.status(401).json({ error: 'Unauthorized' });
