@@ -1,7 +1,5 @@
 require('dotenv').config();
-const { Client } = require('@notionhq/client');
-
-const notion = new Client({ auth: process.env.NOTION_TOKEN });
+const { queryDatabase, createPage, updatePage, archivePage } = require('../lib/notion-client');
 
 const LOANS_DB      = process.env.NOTION_LOANS_DB_ID;
 const CONDITIONS_DB = process.env.NOTION_CONDITIONS_DB_ID;
@@ -18,66 +16,43 @@ const FUNDED_STATUSES = new Set([
 ]);
 
 function log(loanId, status, action) {
-  console.log(JSON.stringify({
-    ts: new Date().toISOString(),
-    loanId,
-    status,
-    action
-  }));
+  console.log(JSON.stringify({ ts: new Date().toISOString(), loanId, status, action }));
 }
 
 async function findLoanByLoanId(loanId) {
-  const res = await notion.databases.query({
-    database_id: LOANS_DB,
-    filter: {
-      property: 'Loan ID',
-      rich_text: { equals: loanId }
-    }
+  const res = await queryDatabase(LOANS_DB, {
+    property: 'Loan ID', rich_text: { equals: loanId }
   });
   return res.results[0] ?? null;
 }
 
 async function findConditionsByLoan(loanPageId) {
-  const res = await notion.databases.query({
-    database_id: CONDITIONS_DB,
-    filter: {
-      property: 'Loan',
-      relation: { contains: loanPageId }
-    }
+  const res = await queryDatabase(CONDITIONS_DB, {
+    property: 'Loan', relation: { contains: loanPageId }
   });
   return res.results;
 }
 
 async function createLoan({ loanId, borrowerName, loName, status }) {
-  await notion.pages.create({
-    parent: { database_id: LOANS_DB },
-    properties: {
-      'Borrower Name': { title: [{ text: { content: borrowerName } }] },
-      'Loan ID':       { rich_text: [{ text: { content: loanId } }] },
-      'LO Name':       { rich_text: [{ text: { content: loName ?? '' } }] },
-      'Status':        { select: { name: status } },
-      'Date Added':    { date: { start: new Date().toISOString().split('T')[0] } }
-    }
+  await createPage(LOANS_DB, {
+    'Borrower Name': { title:     [{ text: { content: borrowerName } }] },
+    'Loan ID':       { rich_text: [{ text: { content: loanId } }] },
+    'LO Name':       { rich_text: [{ text: { content: loName ?? '' } }] },
+    'Status':        { select:    { name: status } },
+    'Date Added':    { date:      { start: new Date().toISOString().split('T')[0] } }
   });
   log(loanId, status, 'created');
 }
 
 async function updateLoanStatus(pageId, loanId, status) {
-  await notion.pages.update({
-    page_id: pageId,
-    properties: {
-      'Status': { select: { name: status } }
-    }
-  });
+  await updatePage(pageId, { 'Status': { select: { name: status } } });
   log(loanId, status, 'updated');
 }
 
 async function deleteLoanAndConditions(page, loanId) {
   const conditions = await findConditionsByLoan(page.id);
-  for (const cond of conditions) {
-    await notion.pages.update({ page_id: cond.id, archived: true });
-  }
-  await notion.pages.update({ page_id: page.id, archived: true });
+  for (const cond of conditions) await archivePage(cond.id);
+  await archivePage(page.id);
   log(loanId, 'FUNDED', `deleted loan + ${conditions.length} condition(s)`);
 }
 
@@ -100,15 +75,13 @@ async function handleFunded({ loanId }) {
 }
 
 module.exports = async (req, res) => {
-  // Auth check
   const incomingKey = req.headers['x-zapier-key'] ?? req.headers['authorization'];
   if (!incomingKey || incomingKey !== HEADER_KEY) {
     log('unknown', 'AUTH', 'rejected — bad header key');
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // Parse payload
-  const body = req.body ?? {};
+  const body        = req.body ?? {};
   const loanId      = body.loan_id ?? body.loanId ?? body['Loan ID'];
   const borrowerName = body.borrower_name ?? body.borrowerName ?? body['Borrower Name'] ?? '';
   const loName      = body.lo_name ?? body.loName ?? body['LO Name'] ?? '';
@@ -124,15 +97,12 @@ module.exports = async (req, res) => {
       await handleProcessing({ loanId, borrowerName, loName, status });
       return res.status(200).json({ ok: true, action: 'upserted', loanId, status });
     }
-
     if (FUNDED_STATUSES.has(status)) {
       await handleFunded({ loanId });
       return res.status(200).json({ ok: true, action: 'deleted', loanId, status });
     }
-
     log(loanId, status, 'ignored — unrecognized status');
     return res.status(200).json({ ok: true, action: 'ignored', loanId, status });
-
   } catch (err) {
     console.error(JSON.stringify({ ts: new Date().toISOString(), error: err.message, loanId, status }));
     return res.status(500).json({ error: 'Internal server error' });
