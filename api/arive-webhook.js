@@ -19,11 +19,46 @@ function log(loanId, status, action) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), loanId, status, action }));
 }
 
-async function findLoanByLoanId(loanId) {
-  const res = await queryDatabase(LOANS_DB, {
-    property: 'Loan ID', rich_text: { equals: loanId }
-  });
-  return res.results[0] ?? null;
+// Normalize loan ID — trim whitespace and collapse internal spaces
+function normalizeLoanId(raw) {
+  return (raw ?? '').toString().trim().replace(/\s+/g, ' ');
+}
+
+// Find by exact Loan ID, then fall back to borrower name contains
+async function findExistingLoan(loanId, borrowerName) {
+  // 1. Exact Loan ID match
+  if (loanId) {
+    const r = await queryDatabase(LOANS_DB, {
+      property: 'Loan ID', rich_text: { equals: loanId }
+    });
+    if (r.results.length) {
+      log(loanId, null, `found by loan-id (${r.results.length} result)`);
+      return r.results[0];
+    }
+
+    // 2. Loan ID contains (handles minor prefix/suffix differences)
+    const r2 = await queryDatabase(LOANS_DB, {
+      property: 'Loan ID', rich_text: { contains: loanId }
+    });
+    if (r2.results.length) {
+      log(loanId, null, `found by loan-id contains`);
+      return r2.results[0];
+    }
+  }
+
+  // 3. Borrower name fallback (first word match)
+  if (borrowerName) {
+    const firstName = borrowerName.trim().split(/\s+/)[0];
+    const r3 = await queryDatabase(LOANS_DB, {
+      property: 'Borrower Name', title: { contains: firstName }
+    });
+    if (r3.results.length) {
+      log(loanId, null, `found by borrower-name fallback ("${firstName}")`);
+      return r3.results[0];
+    }
+  }
+
+  return null;
 }
 
 async function findConditionsByLoan(loanPageId) {
@@ -57,7 +92,7 @@ async function deleteLoanAndConditions(page, loanId) {
 }
 
 async function handleProcessing({ loanId, borrowerName, loName, status }) {
-  const existing = await findLoanByLoanId(loanId);
+  const existing = await findExistingLoan(loanId, borrowerName);
   if (existing) {
     await updateLoanStatus(existing.id, loanId, status);
   } else {
@@ -65,8 +100,8 @@ async function handleProcessing({ loanId, borrowerName, loName, status }) {
   }
 }
 
-async function handleFunded({ loanId }) {
-  const existing = await findLoanByLoanId(loanId);
+async function handleFunded({ loanId, borrowerName }) {
+  const existing = await findExistingLoan(loanId, borrowerName);
   if (existing) {
     await deleteLoanAndConditions(existing, loanId);
   } else {
@@ -84,16 +119,18 @@ module.exports = async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const body        = req.body ?? {};
-  const loanId      = body.loan_id ?? body.loanId ?? body['Loan ID'];
-  const borrowerName = body.borrower_name ?? body.borrowerName ?? body['Borrower Name'] ?? '';
-  const loName      = body.lo_name ?? body.loName ?? body['LO Name'] ?? '';
-  const status      = (body.status ?? body.Status ?? '').toUpperCase().replace(/\s+/g, '_');
+  const body         = req.body ?? {};
+  const loanId       = normalizeLoanId(body.loan_id ?? body.loanId ?? body['Loan ID']);
+  const borrowerName = (body.borrower_name ?? body.borrowerName ?? body['Borrower Name'] ?? '').trim();
+  const loName       = (body.lo_name ?? body.loName ?? body['LO Name'] ?? '').trim();
+  const status       = (body.status ?? body.Status ?? '').toString().toUpperCase().replace(/\s+/g, '_').trim();
 
   if (!loanId || !status) {
     log('unknown', status, 'rejected — missing loanId or status');
     return res.status(400).json({ error: 'Missing loan_id or status' });
   }
+
+  log(loanId, status, `received — borrower: "${borrowerName}"`);
 
   try {
     if (PROCESSING_STATUSES.has(status)) {
@@ -101,7 +138,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true, action: 'upserted', loanId, status });
     }
     if (FUNDED_STATUSES.has(status)) {
-      await handleFunded({ loanId });
+      await handleFunded({ loanId, borrowerName });
       return res.status(200).json({ ok: true, action: 'deleted', loanId, status });
     }
     log(loanId, status, 'ignored — unrecognized status');
