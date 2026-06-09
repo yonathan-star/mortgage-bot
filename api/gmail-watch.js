@@ -5,7 +5,7 @@ const { getClients }  = require('../lib/gmail-client');
 const { classify, isUwmLoanSubject } = require('../lib/email-classifier');
 
 const DRY_RUN = process.env.DRY_RUN === 'true';
-const MAX_MESSAGES_PER_INBOX = 5;
+const MAX_MESSAGES_PER_INBOX = 2;
 const SCAN_TIMEZONE = process.env.GMAIL_SCAN_TIMEZONE || 'America/New_York';
 const PROCESSED_LABEL = process.env.GMAIL_PROCESSED_LABEL || 'mortgage-bot-processed';
 const labelIdCache = {};
@@ -239,7 +239,7 @@ async function watchInbox(account, state, cutoffMs, stats) {
 
   const listRes = await gmail.users.messages.list({
     userId:   'me',
-    maxResults: 15,
+    maxResults: MAX_MESSAGES_PER_INBOX,
     q: buildInboxQuery(cutoffMs)
   });
 
@@ -249,7 +249,8 @@ async function watchInbox(account, state, cutoffMs, stats) {
     return state;
   }
 
-  const toProcess = messages.reverse().slice(0, MAX_MESSAGES_PER_INBOX);
+  // Gmail returns newest first — process only the 2 most recent unlabeled emails
+  const toProcess = messages.slice(0, MAX_MESSAGES_PER_INBOX);
 
   for (const msg of toProcess) {
     const result = await processMessage(gmail, label, msg, cutoffMs, stats);
