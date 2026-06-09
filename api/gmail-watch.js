@@ -223,13 +223,6 @@ async function processMessage(gmail, inboxLabel, msg, cutoffMs, stats) {
     stats.dispatched++;
     return 'dispatched';
 
-  } else if (classification === 'CORRECTION') {
-    const correction = require('../lib/correction-handler');
-    await correction.process({ subject, from, body });
-    log(inboxLabel, msg.id, classification, 'dispatched to correction-handler');
-    stats.dispatched++;
-    return 'dispatched';
-
   } else if (classification === 'LENDER_REQUEST') {
     const lenderRequest = require('../lib/lender-request-handler');
     await lenderRequest.process({ subject, from, body });

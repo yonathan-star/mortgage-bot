@@ -3,6 +3,5 @@ node_modules/
 .env.local
 .env.production
 screenshots/
-corrections.json
 *.log
 .vercel/
