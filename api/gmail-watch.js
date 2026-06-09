@@ -41,14 +41,26 @@ function formatGmailAfterDate(epochMs) {
   return `${y}/${m}/${d}`;
 }
 
+function getStartOfTodayMs() {
+  const now = new Date();
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: SCAN_TIMEZONE,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).formatToParts(now).map(p => [p.type, p.value])
+  );
+  const msToday = (+parts.hour * 3600 + +parts.minute * 60 + +parts.second) * 1000;
+  return now.getTime() - msToday;
+}
+
 function ensureScanCutoff(state) {
   if (process.env.GMAIL_SCAN_AFTER) {
     state.scanCutoffMs = Date.parse(process.env.GMAIL_SCAN_AFTER);
     return state;
   }
-  if (!state.scanCutoffMs) {
-    state.scanCutoffMs = Date.now();
-  }
+  // Default: start of today (Eastern) — not "right now", so earlier-today emails aren't skipped
+  state.scanCutoffMs = getStartOfTodayMs();
   return state;
 }
 
@@ -140,7 +152,7 @@ async function processMessage(gmail, inboxLabel, msg, cutoffMs, stats) {
   if (internalDate < cutoffMs && !bypassCutoff) {
     log(inboxLabel, msg.id, null, 'skipped-before-cutoff');
     stats.skippedCutoff++;
-    return;
+    return 'skipped-cutoff';
   }
 
   const classification = classify(subject, body, { hasPdf: hasPDF });
@@ -151,7 +163,7 @@ async function processMessage(gmail, inboxLabel, msg, cutoffMs, stats) {
   if (DRY_RUN) {
     log(inboxLabel, msg.id, classification, 'dry-run-skipped');
     stats.dryRun++;
-    return;
+    return 'dry-run';
   }
 
   if (classification === 'CONDITION_LIST') {
@@ -166,28 +178,34 @@ async function processMessage(gmail, inboxLabel, msg, cutoffMs, stats) {
     await conditionParser.process({ subject, from, body, pdfBuffer, msgId: msg.id });
     log(inboxLabel, msg.id, classification, 'dispatched to condition-parser');
     stats.dispatched++;
+    return 'dispatched';
 
   } else if (classification === 'PRE_APPROVAL') {
     const preApproval = require('../lib/pre-approval-handler');
     await preApproval.process({ subject, from, body });
     log(inboxLabel, msg.id, classification, 'dispatched to pre-approval-handler');
     stats.dispatched++;
+    return 'dispatched';
 
   } else if (classification === 'CORRECTION') {
     const correction = require('../lib/correction-handler');
     await correction.process({ subject, from, body });
     log(inboxLabel, msg.id, classification, 'dispatched to correction-handler');
     stats.dispatched++;
+    return 'dispatched';
 
   } else {
     log(inboxLabel, msg.id, classification, 'skipped');
     stats.skippedOther++;
+    return 'skipped-other';
   }
 }
 
 async function watchInbox(account, state, cutoffMs, stats) {
   const { label, gmail } = account;
-  const lastId = state[label] ?? null;
+  if (!state.processed) state.processed = {};
+  if (!state.processed[label]) state.processed[label] = [];
+  const processedSet = new Set(state.processed[label]);
 
   const listRes = await gmail.users.messages.list({
     userId:   'me',
@@ -201,15 +219,16 @@ async function watchInbox(account, state, cutoffMs, stats) {
     return state;
   }
 
-  const newMessages = lastId
-    ? messages.filter(m => m.id > lastId)
-    : messages;
-
+  const newMessages = messages.filter(m => !processedSet.has(m.id));
   const toProcess = newMessages.reverse().slice(0, MAX_MESSAGES_PER_INBOX);
+
   for (const msg of toProcess) {
-    await processMessage(gmail, label, msg, cutoffMs, stats);
-    state[label] = msg.id;
-    saveState(state);
+    const result = await processMessage(gmail, label, msg, cutoffMs, stats);
+    // Only mark done if handled; skipped-cutoff emails retry on next scan
+    if (result && result !== 'skipped-cutoff') {
+      state.processed[label].push(msg.id);
+      saveState(state);
+    }
   }
 
   return state;
@@ -218,6 +237,13 @@ async function watchInbox(account, state, cutoffMs, stats) {
 module.exports = async (req, res) => {
   const clients = getClients();
   let state = loadState();
+
+  if (req.query?.reset === 'true') {
+    state = { processed: {} };
+    saveState(state);
+    log('system', null, null, 'state-reset');
+  }
+
   state = ensureScanCutoff(state);
   saveState(state);
 
