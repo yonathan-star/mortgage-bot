@@ -1,6 +1,6 @@
 require('dotenv').config();
 const fs = require('fs');
-const { PDFParse } = require('pdf-parse');
+const pdfParse = require('pdf-parse');
 const { parseUwmApprovalLetter } = require('../lib/condition-parser');
 
 const pdfPath = process.argv[2];
@@ -11,13 +11,7 @@ if (!pdfPath) {
 
 (async () => {
   const buf = fs.readFileSync(pdfPath);
-  const parser = new PDFParse({ data: buf });
-  let text;
-  try {
-    text = (await parser.getText()).text;
-  } finally {
-    await parser.destroy();
-  }
+  const text = (await pdfParse(buf)).text;
   const parsed = parseUwmApprovalLetter(text);
 
   if (!parsed) {
