@@ -5,8 +5,8 @@ const LOANS_DB      = process.env.NOTION_LOANS_DB_ID;
 const CONDITIONS_DB = process.env.NOTION_CONDITIONS_DB_ID;
 const HEADER_KEY    = process.env.ZAPIER_STATIC_HEADER_KEY;
 
-const FUNDED_STATUSES = new Set([
-  'LOAN_FUNDED', 'BROKER_CHECK_RECEIVED', 'COMMISSION_PAID'
+const DELETE_STATUSES = new Set([
+  'LOAN_FUNDED', 'BROKER_CHECK_RECEIVED', 'COMMISSION_PAID', 'ADVERSE'
 ]);
 
 // Map Arive "Current Loan Status" text values → our Notion status codes
@@ -36,6 +36,7 @@ const CURRENT_STATUS_MAP = {
   'loanfunded':              'LOAN_FUNDED',
   'brokercheckreceived':     'BROKER_CHECK_RECEIVED',
   'commissionpaid':          'COMMISSION_PAID',
+  'adverse':                 'ADVERSE',
 };
 
 function mapCurrentLoanStatus(raw) {
@@ -177,11 +178,11 @@ async function updateLoanStatus(pageId, loanId, status) {
   log(loanId, status, 'updated');
 }
 
-async function deleteLoanAndConditions(page, loanId) {
+async function deleteLoanAndConditions(page, loanId, status) {
   const conditions = await findConditionsByLoan(page.id);
   for (const cond of conditions) await archivePage(cond.id);
   await archivePage(page.id);
-  log(loanId, 'FUNDED', `deleted loan + ${conditions.length} condition(s)`);
+  log(loanId, status, `deleted loan + ${conditions.length} condition(s)`);
 }
 
 module.exports = async (req, res) => {
@@ -214,9 +215,9 @@ module.exports = async (req, res) => {
   log(loanId, resolvedStatus, status ? 'status-derived' : 'status-defaulted-to-LOAN_SETUP');
 
   try {
-    if (FUNDED_STATUSES.has(resolvedStatus)) {
+    if (DELETE_STATUSES.has(resolvedStatus)) {
       const existing = await findExistingLoan(loanId, borrowerName);
-      if (existing) await deleteLoanAndConditions(existing, loanId);
+      if (existing) await deleteLoanAndConditions(existing, loanId, resolvedStatus);
       else log(loanId, resolvedStatus, 'loan not found — nothing to delete');
       return res.status(200).json({ ok: true, action: 'deleted', loanId, status: resolvedStatus });
     }
