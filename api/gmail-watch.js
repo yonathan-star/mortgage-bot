@@ -273,7 +273,7 @@ async function watchInbox(account, state, cutoffMs, stats) {
   return state;
 }
 
-module.exports = async (req, res) => {
+async function runScan(req) {
   const clients = getClients();
   let state = loadState();
 
@@ -292,7 +292,7 @@ module.exports = async (req, res) => {
 
   log('system', null, null, `scan-cutoff:${new Date(cutoffMs).toISOString()}`);
 
-  for (const [key, account] of Object.entries(clients)) {
+  for (const [, account] of Object.entries(clients)) {
     try {
       state = await watchInbox(account, state, cutoffMs, stats);
       results[account.label] = 'ok';
@@ -303,12 +303,35 @@ module.exports = async (req, res) => {
   }
 
   saveState(state);
-  return res.status(200).json({
+  const payload = {
     ok: true,
     ts: new Date().toISOString(),
     scanCutoff: new Date(cutoffMs).toISOString(),
     scanQuery: buildInboxQuery(cutoffMs),
     results,
     stats
-  });
+  };
+  console.log(JSON.stringify({ action: 'scan-complete', ...payload }));
+  return payload;
+}
+
+module.exports = async (req, res) => {
+  // cron-job.org times out at 30s; scans can take ~60s. Reply immediately on Vercel
+  // and finish the scan in the background so cron reports success.
+  if (process.env.VERCEL) {
+    const { waitUntil } = require('@vercel/functions');
+    waitUntil(
+      runScan(req).catch(err => {
+        console.error(JSON.stringify({ ts: new Date().toISOString(), action: 'scan-error', error: err.message }));
+      })
+    );
+    return res.status(202).json({
+      ok: true,
+      message: 'Scan started — check Vercel logs for results',
+      ts: new Date().toISOString()
+    });
+  }
+
+  const payload = await runScan(req);
+  return res.status(200).json(payload);
 };
